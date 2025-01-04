@@ -6,16 +6,19 @@ import {Access, IRoleBasedAccessControl} from "./../interfaces/IRoleBasedAccessC
 import {Events} from "./../types/Events.sol";
 
 /**
- * This Access Control:
- * - Has a single special pre-defined role, the Owner role, with pre-defined permissions.
- * - Allows to have only a single Owner.
- * - Pre-establishes that the Owner can do everything.
- * - Allows to add any extra roles.
- * - Has zero-values as wildcards for both contract addresses scopes and permission IDs (i.e. 0 means ANY).
- * - Chain of lookup: scoped permission > scoped contract > global permission > global contract (i.e. scoped-overrides strategy).
- * - More specific (and less wildcards) scoped permissions have precedence over more general ones.
- * - Within an specific role the denied-overrides strategy is applied (in case of same amount of wildcards).
- * - When some account has many roles, the final permission is the most permissive one (i.e. granted-overrides strategy).
+ * @title RoleBasedAccessControl
+ * @notice Implementation of a role-based access control system with hierarchical permissions
+ * @dev This contract implements a flexible access control system with the following features:
+ * - Single owner role with full permissions
+ * - Support for multiple custom roles
+ * - Hierarchical permission system with wildcards
+ * - Granular permission control per contract and action
+ * - Permission inheritance and override mechanisms
+ *
+ * Security considerations:
+ * - Owner role has unlimited permissions and should be assigned carefully
+ * - Role assignments should be monitored as they can grant significant permissions
+ * - Permission changes are only allowed by the owner
  */
 contract RoleBasedAccessControl is IRoleBasedAccessControl {
     event Lens_OwnershipTransferred(address indexed previousOwner, address indexed newOwner); // TODO: Do we need it?
@@ -79,7 +82,8 @@ contract RoleBasedAccessControl is IRoleBasedAccessControl {
     }
 
     function _grantRole(address account, uint256 roleId) internal virtual {
-        require(!_hasRole(account, roleId));
+        require(account != address(0), "Cannot grant role to zero address");
+        require(!_hasRole(account, roleId), "Role already granted");
         _roles[account].push(roleId);
         emit Lens_AccessControl_RoleGranted(account, roleId);
     }
@@ -96,19 +100,18 @@ contract RoleBasedAccessControl is IRoleBasedAccessControl {
 
     function _revokeRole(address account, uint256 roleId) internal virtual {
         uint256 accountRolesLength = _roles[account].length;
-        require(accountRolesLength > 0);
-        uint256 roleIndex = 0;
-        while (roleIndex < accountRolesLength) {
-            if (_roles[account][roleIndex] == roleId) {
-                break;
-            } else {
-                roleIndex++;
+        require(accountRolesLength > 0, "Account has no roles");
+        
+        for (uint256 i = 0; i < accountRolesLength; i++) {
+            if (_roles[account][i] == roleId) {
+                // Move the last element to the position being deleted
+                _roles[account][i] = _roles[account][accountRolesLength - 1];
+                _roles[account].pop();
+                emit Lens_AccessControl_RoleRevoked(account, roleId);
+                return;
             }
         }
-        require(roleIndex < accountRolesLength); // Index must be found before reaching the end of the array
-        _roles[account][roleIndex] = _roles[account][accountRolesLength - 1];
-        _roles[account].pop();
-        emit Lens_AccessControl_RoleRevoked(account, roleId);
+        revert("Role not found");
     }
 
     function hasRole(address account, uint256 roleId) external view override returns (bool) {
@@ -171,24 +174,26 @@ contract RoleBasedAccessControl is IRoleBasedAccessControl {
         virtual
         returns (bool)
     {
-        require(contractAddress != ANY_CONTRACT_ADDRESS);
-        require(permissionId != ANY_PERMISSION_ID);
+        require(contractAddress != ANY_CONTRACT_ADDRESS, "Invalid contract address");
+        require(permissionId != ANY_PERMISSION_ID, "Invalid permission ID");
 
+        // Check fully specified access first
         Access fullySpecifiedAccess = _access[roleId][contractAddress][permissionId];
-
         if (fullySpecifiedAccess != Access.UNDEFINED) {
             return fullySpecifiedAccess == Access.GRANTED;
         }
 
+        // Check partial wildcards
         Access anyPermissionAccess = _access[roleId][contractAddress][ANY_PERMISSION_ID];
         Access anyAddressAccess = _access[roleId][ANY_CONTRACT_ADDRESS][permissionId];
 
+        // If both partial wildcards are undefined, check full wildcard
         if (anyPermissionAccess == Access.UNDEFINED && anyAddressAccess == Access.UNDEFINED) {
             return _access[roleId][ANY_CONTRACT_ADDRESS][ANY_PERMISSION_ID] == Access.GRANTED;
-        } else {
-            // DENIED-overrides strategy
-            return anyPermissionAccess != Access.DENIED && anyAddressAccess != Access.DENIED;
         }
+
+        // Apply DENIED-overrides strategy for partial wildcards
+        return anyPermissionAccess != Access.DENIED && anyAddressAccess != Access.DENIED;
     }
 
     function getAccess(uint256 roleId, address contractAddress, uint256 permissionId)
